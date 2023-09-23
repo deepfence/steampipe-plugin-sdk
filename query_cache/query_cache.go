@@ -10,8 +10,10 @@ import (
 	"time"
 
 	"github.com/allegro/bigcache/v3"
-	"github.com/eko/gocache/v3/cache"
-	"github.com/eko/gocache/v3/store"
+	"github.com/deepfence/gocache/lib/v4/cache"
+	libstore "github.com/deepfence/gocache/lib/v4/store"
+	bigcachestore "github.com/deepfence/gocache/store/bigcache/v4"
+	postgresstore "github.com/deepfence/gocache/store/postgresqlcache/v4"
 	"github.com/turbot/go-kit/helpers"
 	"github.com/turbot/steampipe-plugin-sdk/v5/error_helpers"
 	"github.com/turbot/steampipe-plugin-sdk/v5/grpc"
@@ -65,16 +67,40 @@ func NewQueryCache(pluginName string, pluginSchemaMap map[string]*grpc.PluginSch
 	return queryCache, nil
 }
 
+const (
+	DatabaseDefaultListenAddresses = "localhost"
+	DatabaseDefaultPort            = 9193
+	DatabaseUser                   = "postgresqlcache"
+	DatabasePassword               = ""
+	DatabaseName                   = "postgresqlcache"
+	DatabaseSslMode                = "disable"
+	PoolMaxConns                   = 30
+	PoolMinConns                   = 5
+	PoolHealthCheckPeriod          = "30s"
+)
+
 func (c *QueryCache) createCache(maxCacheStorageMb int, maxTtl time.Duration) error {
-	cacheStore, err := c.createCacheStore(maxCacheStorageMb, maxTtl)
-	if err != nil {
-		return err
+	cacheStore, err := c.createPostgresqlCacheStore()
+	if err == nil {
+		c.cache = cache.New[[]byte](cacheStore)
+		return nil
+	} else {
+		log.Println(err.Error())
+		bigCacheStore, err := c.createCacheStore(maxCacheStorageMb, maxTtl)
+		if err != nil {
+			return err
+		}
+		c.cache = cache.New[[]byte](bigCacheStore)
 	}
-	c.cache = cache.New[[]byte](cacheStore)
 	return nil
 }
 
-func (c *QueryCache) createCacheStore(maxCacheStorageMb int, maxTtl time.Duration) (store.StoreInterface, error) {
+func (c *QueryCache) createPostgresqlCacheStore() (*postgresstore.PostgresqlStore, error) {
+	return postgresstore.NewPostgresqlStore(fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s&pool_max_conns=%d&pool_min_conns=%d&pool_health_check_period=%s",
+		DatabaseUser, DatabasePassword, DatabaseDefaultListenAddresses, DatabaseDefaultPort, DatabaseName, DatabaseSslMode, PoolMaxConns, PoolMinConns, PoolHealthCheckPeriod))
+}
+
+func (c *QueryCache) createCacheStore(maxCacheStorageMb int, maxTtl time.Duration) (libstore.StoreInterface, error) {
 	config := bigcache.DefaultConfig(maxTtl)
 	// ensure each shard is at least 5Mb
 	config.Shards = 1024
@@ -88,7 +114,7 @@ func (c *QueryCache) createCacheStore(maxCacheStorageMb int, maxTtl time.Duratio
 	log.Printf("[TRACE] createCacheStore for plugin '%s' setting max size to %dMb, Shards: %d, max shard size: %d ", c.pluginName, maxCacheStorageMb, config.Shards, ((maxCacheStorageMb*1024*1024)/config.Shards)/(1024*1024))
 
 	bigcacheClient, _ := bigcache.NewBigCache(config)
-	bigcacheStore := store.NewBigcache(bigcacheClient)
+	bigcacheStore := bigcachestore.NewBigcache(bigcacheClient)
 	return bigcacheStore, nil
 }
 
@@ -419,7 +445,7 @@ func (c *QueryCache) ClearForConnection(ctx context.Context, connectionName stri
 	if !c.Enabled {
 		return
 	}
-	c.cache.Invalidate(ctx, store.WithInvalidateTags([]string{connectionName}))
+	c.cache.Invalidate(ctx, libstore.WithInvalidateTags([]string{connectionName}))
 }
 
 // write a page of rows to the cache
@@ -704,8 +730,8 @@ func doSet[T CacheData](ctx context.Context, key string, value T, ttl time.Durat
 	err = cache.Set(ctx,
 		key,
 		bytes,
-		store.WithExpiration(ttl),
-		store.WithTags(tags),
+		libstore.WithExpiration(ttl),
+		libstore.WithTags(tags),
 	)
 	if err != nil {
 		log.Printf("[WARN] doSet cache.Set failed: %v", err)

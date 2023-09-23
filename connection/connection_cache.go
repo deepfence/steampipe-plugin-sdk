@@ -3,9 +3,10 @@ package connection
 import (
 	"context"
 	"fmt"
-	"github.com/eko/gocache/v3/cache"
-	"github.com/eko/gocache/v3/store"
 	"time"
+
+	"github.com/deepfence/gocache/lib/v4/cache"
+	"github.com/deepfence/gocache/lib/v4/store"
 )
 
 // ConnectionCache is a simple cache wrapper - multiple connections use the same underlying cache (owned by the plugin)

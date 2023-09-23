@@ -12,12 +12,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gertd/go-pluralize"
-
+	"github.com/deepfence/gocache/lib/v4/cache"
+	ristrettostore "github.com/deepfence/gocache/store/ristretto/v4"
 	"github.com/dgraph-io/ristretto"
-	"github.com/eko/gocache/v3/cache"
-	"github.com/eko/gocache/v3/store"
 	"github.com/fsnotify/fsnotify"
+	"github.com/gertd/go-pluralize"
 	"github.com/hashicorp/go-hclog"
 	"github.com/turbot/go-kit/helpers"
 	connectionmanager "github.com/turbot/steampipe-plugin-sdk/v5/connection"
@@ -201,7 +200,7 @@ func (p *Plugin) createConnectionCacheStore() error {
 	if err != nil {
 		return err
 	}
-	ristrettoStore := store.NewRistretto(ristrettoCache)
+	ristrettoStore := ristrettostore.NewRistretto(ristrettoCache)
 	p.connectionCacheStore = cache.New[any](ristrettoStore)
 	return nil
 }
