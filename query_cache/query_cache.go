@@ -74,8 +74,8 @@ const (
 	DatabasePassword               = ""
 	DatabaseName                   = "postgresqlcache"
 	DatabaseSslMode                = "disable"
-	PoolMaxConns                   = 30
-	PoolMinConns                   = 5
+	PoolMaxConns                   = 600
+	PoolMinConns                   = 20
 	PoolHealthCheckPeriod          = "30s"
 )
 
