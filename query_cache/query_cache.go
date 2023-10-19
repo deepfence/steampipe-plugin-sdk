@@ -31,8 +31,10 @@ type CacheData interface {
 
 const (
 	// cache has a default hard TTL limit of 24 hours
-	DefaultMaxTtl = 24 * time.Hour
-	rowBufferSize = 1000
+	DefaultMaxTtl      = 24 * time.Hour
+	rowBufferSize      = 1000
+	maxCacheRetries    = 3
+	cacheRetryInterval = 5 * time.Second
 )
 
 type QueryCache struct {
@@ -698,44 +700,62 @@ func (c *QueryCache) cacheSetIndexBucket(ctx context.Context, indexBucketKey str
 }
 
 func doGet[T CacheData](ctx context.Context, key string, cache *cache.Cache[[]byte], target T) error {
-	// get the bytes from the cache
-	getRes, err := cache.Get(ctx, key)
-	if err != nil {
-		if IsCacheMiss(err) {
-			log.Printf("[TRACE] doGet cache miss ")
-		} else {
-			log.Printf("[WARN] cache.Get returned error %s", err.Error())
+	count := 0
+	for {
+		// get the bytes from the cache
+		getRes, err := cache.Get(ctx, key)
+		if err != nil {
+			if count >= maxCacheRetries {
+				if IsCacheMiss(err) {
+					log.Printf("[TRACE] doGet cache miss ")
+				} else {
+					log.Printf("[WARN] cache.Get returned error %s", err.Error())
+				}
+				//  return the error
+				return err
+			}
+			count += 1
+			time.Sleep(cacheRetryInterval)
+			continue
 		}
-		//  return the error
-		return err
-	}
 
-	// unmarshall into the correct type
-	err = proto.Unmarshal(getRes, target)
-	if err != nil {
-		log.Printf("[WARN] error unmarshalling result: %s", err.Error())
-		return err
+		// unmarshall into the correct type
+		err = proto.Unmarshal(getRes, target)
+		if err != nil {
+			log.Printf("[WARN] error unmarshalling result: %s", err.Error())
+			return err
+		}
+		break
 	}
 
 	return nil
 }
 
 func doSet[T CacheData](ctx context.Context, key string, value T, ttl time.Duration, cache *cache.Cache[[]byte], tags []string) error {
-	bytes, err := proto.Marshal(value)
-	if err != nil {
-		log.Printf("[WARN] doSet - marshal failed: %v", err)
-		return err
-	}
+	count := 0
+	for {
+		bytes, err := proto.Marshal(value)
+		if err != nil {
+			if count >= maxCacheRetries {
+				log.Printf("[WARN] doSet - marshal failed: %v", err)
+				return err
+			}
+			count += 1
+			time.Sleep(cacheRetryInterval)
+			continue
+		}
 
-	err = cache.Set(ctx,
-		key,
-		bytes,
-		libstore.WithExpiration(ttl),
-		libstore.WithTags(tags),
-	)
-	if err != nil {
-		log.Printf("[WARN] doSet cache.Set failed: %v", err)
+		err = cache.Set(ctx,
+			key,
+			bytes,
+			libstore.WithExpiration(ttl),
+			libstore.WithTags(tags),
+		)
+		if err != nil {
+			log.Printf("[WARN] doSet cache.Set failed: %v", err)
+			return err
+		}
+		break
 	}
-
-	return err
+	return nil
 }
