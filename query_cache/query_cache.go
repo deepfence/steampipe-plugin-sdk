@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -70,16 +71,40 @@ func NewQueryCache(pluginName string, pluginSchemaMap map[string]*grpc.PluginSch
 }
 
 const (
+	PoolMaxConns          = 600
+	PoolMinConns          = 20
+	PoolHealthCheckPeriod = "30s"
+)
+
+var (
 	DatabaseDefaultListenAddresses = "localhost"
-	DatabaseDefaultPort            = 9193
+	DatabaseDefaultPort            = "9193"
 	DatabaseUser                   = "postgresqlcache"
 	DatabasePassword               = ""
 	DatabaseName                   = "postgresqlcache"
 	DatabaseSslMode                = "disable"
-	PoolMaxConns                   = 600
-	PoolMinConns                   = 20
-	PoolHealthCheckPeriod          = "30s"
 )
+
+func init() {
+	if dbHost := os.Getenv("POSTGRES_USER_DB_HOST"); dbHost != "" {
+		DatabaseDefaultListenAddresses = dbHost
+	}
+	if dbPort := os.Getenv("POSTGRES_USER_DB_PORT"); dbPort != "" {
+		DatabaseDefaultPort = dbPort
+	}
+	if dbUser := os.Getenv("POSTGRES_USER_DB_USER"); dbUser != "" {
+		DatabaseUser = dbUser
+	}
+	if dbPassword := os.Getenv("POSTGRES_USER_DB_PASSWORD"); dbPassword != "" {
+		DatabasePassword = dbPassword
+	}
+	if dbName := os.Getenv("POSTGRES_USER_DB_NAME"); dbName != "" {
+		DatabaseName = dbName
+	}
+	if dbSSLMode := os.Getenv("POSTGRES_USER_DB_SSLMODE"); dbSSLMode != "" {
+		DatabaseSslMode = dbSSLMode
+	}
+}
 
 func (c *QueryCache) createCache(maxCacheStorageMb int, maxTtl time.Duration) error {
 	cacheStore, err := c.createPostgresqlCacheStore()
@@ -98,7 +123,7 @@ func (c *QueryCache) createCache(maxCacheStorageMb int, maxTtl time.Duration) er
 }
 
 func (c *QueryCache) createPostgresqlCacheStore() (*postgresstore.PostgresqlStore, error) {
-	return postgresstore.NewPostgresqlStore(fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s&pool_max_conns=%d&pool_min_conns=%d&pool_health_check_period=%s",
+	return postgresstore.NewPostgresqlStore(fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s&pool_max_conns=%d&pool_min_conns=%d&pool_health_check_period=%s",
 		DatabaseUser, DatabasePassword, DatabaseDefaultListenAddresses, DatabaseDefaultPort, DatabaseName, DatabaseSslMode, PoolMaxConns, PoolMinConns, PoolHealthCheckPeriod))
 }
 
