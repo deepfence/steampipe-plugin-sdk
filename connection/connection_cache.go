@@ -3,12 +3,13 @@ package connection
 import (
 	"context"
 	"fmt"
-	"github.com/dgraph-io/ristretto"
-	"github.com/eko/gocache/lib/v4/cache"
-	"github.com/eko/gocache/lib/v4/store"
-	ristretto_store "github.com/eko/gocache/store/ristretto/v4"
 	"log"
 	"time"
+
+	"github.com/deepfence/gocache/lib/v4/cache"
+	"github.com/deepfence/gocache/lib/v4/store"
+	ristretto_store "github.com/deepfence/gocache/store/ristretto/v4"
+	"github.com/dgraph-io/ristretto"
 )
 
 // ConnectionCache is a simple cache wrapper - multiple connections use the same underlying cache (owned by the plugin)

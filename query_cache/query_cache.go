@@ -4,15 +4,17 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/allegro/bigcache/v3"
-	"github.com/eko/gocache/lib/v4/cache"
-	"github.com/eko/gocache/lib/v4/store"
-	bigcache_store "github.com/eko/gocache/store/bigcache/v4"
+	"github.com/deepfence/gocache/lib/v4/cache"
+	"github.com/deepfence/gocache/lib/v4/store"
+	bigcache_store "github.com/deepfence/gocache/store/bigcache/v4"
+	postgresstore "github.com/deepfence/gocache/store/postgresqlcache/v4"
 	"github.com/gertd/go-pluralize"
 	"github.com/turbot/steampipe-plugin-sdk/v5/grpc"
 	sdkproto "github.com/turbot/steampipe-plugin-sdk/v5/grpc/proto"
@@ -30,7 +32,9 @@ const (
 	// cache has a default hard TTL limit of 24 hours
 	DefaultMaxTtl = 24 * time.Hour
 	// the number of rows we buffer before writing a page the cache
-	rowBufferSize = 1000
+	rowBufferSize      = 1000
+	maxCacheRetries    = 3
+	cacheRetryInterval = 5 * time.Second
 )
 
 type QueryCache struct {
@@ -65,13 +69,61 @@ func NewQueryCache(pluginName string, pluginSchemaMap map[string]*grpc.PluginSch
 	return queryCache, nil
 }
 
-func (c *QueryCache) createCache(maxCacheStorageMb int, maxTtl time.Duration) error {
-	cacheStore, err := c.createCacheStore(maxCacheStorageMb, maxTtl)
-	if err != nil {
-		return err
+const (
+	PoolMaxConns          = 600
+	PoolMinConns          = 20
+	PoolHealthCheckPeriod = "30s"
+)
+
+var (
+	DatabaseDefaultListenAddresses = "localhost"
+	DatabaseDefaultPort            = "9193"
+	DatabaseUser                   = "postgresqlcache"
+	DatabasePassword               = ""
+	DatabaseName                   = "postgresqlcache"
+	DatabaseSslMode                = "disable"
+)
+
+func init() {
+	if dbHost := os.Getenv("POSTGRES_USER_DB_HOST"); dbHost != "" {
+		DatabaseDefaultListenAddresses = dbHost
 	}
-	c.cache = cache.New[[]byte](cacheStore)
+	if dbPort := os.Getenv("POSTGRES_USER_DB_PORT"); dbPort != "" {
+		DatabaseDefaultPort = dbPort
+	}
+	if dbUser := os.Getenv("POSTGRES_USER_DB_USER"); dbUser != "" {
+		DatabaseUser = dbUser
+	}
+	if dbPassword := os.Getenv("POSTGRES_USER_DB_PASSWORD"); dbPassword != "" {
+		DatabasePassword = dbPassword
+	}
+	if dbName := os.Getenv("POSTGRES_USER_DB_NAME"); dbName != "" {
+		DatabaseName = dbName
+	}
+	if dbSSLMode := os.Getenv("POSTGRES_USER_DB_SSLMODE"); dbSSLMode != "" {
+		DatabaseSslMode = dbSSLMode
+	}
+}
+
+func (c *QueryCache) createCache(maxCacheStorageMb int, maxTtl time.Duration) error {
+	cacheStore, err := c.createPostgresqlCacheStore()
+	if err == nil {
+		c.cache = cache.New[[]byte](cacheStore)
+		return nil
+	} else {
+		log.Println(err.Error())
+		bigCacheStore, err := c.createCacheStore(maxCacheStorageMb, maxTtl)
+		if err != nil {
+			return err
+		}
+		c.cache = cache.New[[]byte](bigCacheStore)
+	}
 	return nil
+}
+
+func (c *QueryCache) createPostgresqlCacheStore() (*postgresstore.PostgresqlStore, error) {
+	return postgresstore.NewPostgresqlStore(fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s&pool_max_conns=%d&pool_min_conns=%d&pool_health_check_period=%s",
+		DatabaseUser, DatabasePassword, DatabaseDefaultListenAddresses, DatabaseDefaultPort, DatabaseName, DatabaseSslMode, PoolMaxConns, PoolMinConns, PoolHealthCheckPeriod))
 }
 
 func (c *QueryCache) createCacheStore(maxCacheStorageMb int, maxTtl time.Duration) (store.StoreInterface, error) {
@@ -554,44 +606,62 @@ func (c *QueryCache) cacheSetIndexBucket(ctx context.Context, indexBucketKey str
 }
 
 func doGet[T CacheData](ctx context.Context, key string, cache *cache.Cache[[]byte], target T) error {
-	// get the bytes from the cache
-	getRes, err := cache.Get(ctx, key)
-	if err != nil {
-		if IsCacheMiss(err) {
-			log.Printf("[TRACE] doGet cache miss ")
-		} else {
-			log.Printf("[WARN] cache.Get returned error %s", err.Error())
+	count := 0
+	for {
+		// get the bytes from the cache
+		getRes, err := cache.Get(ctx, key)
+		if err != nil {
+			if count >= maxCacheRetries {
+				if IsCacheMiss(err) {
+					log.Printf("[TRACE] doGet cache miss ")
+				} else {
+					log.Printf("[WARN] cache.Get returned error %s", err.Error())
+				}
+				//  return the error
+				return err
+			}
+			count += 1
+			time.Sleep(cacheRetryInterval)
+			continue
 		}
-		//  return the error
-		return err
-	}
 
-	// unmarshall into the correct type
-	err = proto.Unmarshal(getRes, target)
-	if err != nil {
-		log.Printf("[WARN] error unmarshalling result: %s", err.Error())
-		return err
+		// unmarshall into the correct type
+		err = proto.Unmarshal(getRes, target)
+		if err != nil {
+			log.Printf("[WARN] error unmarshalling result: %s", err.Error())
+			return err
+		}
+		break
 	}
 
 	return nil
 }
 
 func doSet[T CacheData](ctx context.Context, key string, value T, ttl time.Duration, cache *cache.Cache[[]byte], tags []string) error {
-	bytes, err := proto.Marshal(value)
-	if err != nil {
-		log.Printf("[WARN] doSet - marshal failed: %v", err)
-		return err
-	}
+	count := 0
+	for {
+		bytes, err := proto.Marshal(value)
+		if err != nil {
+			if count >= maxCacheRetries {
+				log.Printf("[WARN] doSet - marshal failed: %v", err)
+				return err
+			}
+			count += 1
+			time.Sleep(cacheRetryInterval)
+			continue
+		}
 
-	err = cache.Set(ctx,
-		key,
-		bytes,
-		store.WithExpiration(ttl),
-		store.WithTags(tags),
-	)
-	if err != nil {
-		log.Printf("[WARN] doSet cache.Set failed: %v", err)
+		err = cache.Set(ctx,
+			key,
+			bytes,
+			store.WithExpiration(ttl),
+			store.WithTags(tags),
+		)
+		if err != nil {
+			log.Printf("[WARN] doSet cache.Set failed: %v", err)
+			return err
+		}
+		break
 	}
-
-	return err
+	return nil
 }

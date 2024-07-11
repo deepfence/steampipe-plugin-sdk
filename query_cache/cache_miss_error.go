@@ -10,7 +10,7 @@ func IsCacheMiss(err error) bool {
 	if err == nil {
 		return false
 	}
-	// BigCache returns "Entry not found"
-	errorStrings := []string{CacheMissError{}.Error(), "Entry not found"}
+	// gocache returns "value not found in store"
+	errorStrings := []string{CacheMissError{}.Error(), "value not found in store"}
 	return helpers.StringSliceContains(errorStrings, err.Error())
 }
